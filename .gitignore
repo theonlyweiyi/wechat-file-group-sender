@@ -1,0 +1,20 @@
+# ── 构建产物 ──
+build/
+dist/
+__pycache__/
+*.pyc
+
+# ── 运行时数据 ──
+_uploads/
+@AutomationLog.txt
+
+# ── 旧版启动脚本(已被 exe 取代) ──
+启动群发工具.bat
+
+# ── 私有记忆，切勿上传 ──
+.workbuddy/
+
+# ── 系统/编辑器 ──
+.DS_Store
+Thumbs.db
+*.swp
