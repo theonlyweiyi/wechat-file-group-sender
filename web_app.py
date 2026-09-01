@@ -60,7 +60,7 @@ def _build_template_bytes():
         bottom=Side(style="thin", color="CCCCCC"),
     )
 
-    headers = ["文件名关键词", "微信昵称", "备注（可选）"]
+    headers = ["文件名关键词", "微信备注名/昵称", "备注（可选）"]
     for col, header in enumerate(headers, 1):
         cell = ws.cell(row=1, column=col, value=header)
         cell.font = header_font
@@ -84,11 +84,12 @@ def _build_template_bytes():
     note_row = len(examples) + 3
     ws.cell(row=note_row, column=1, value="使用说明:").font = Font(name="Microsoft YaHei", size=10, bold=True)
     notes = [
-        "1. 第一列填文件名关键词，第二列填微信昵称（与微信显示一致）",
+        "1. 第一列填文件名关键词，第二列填对方的微信备注名（优先）或昵称",
         "2. 匹配规则: 文件名包含关键词即匹配（不区分大小写）",
         "3. 一个关键词匹配到多个文件时，全部发送给对应联系人",
-        "4. 第一行为表头，程序自动跳过",
-        "5. 请确保微信PC版已登录，昵称/备注名与微信一致",
+        "4. 多个关键词映射到同一个人时会自动合并去重，只发送一次",
+        "5. 第一行为表头，程序自动跳过",
+        "6. 请确保微信PC版已登录；重名时建议填微信号（唯一）",
     ]
     for i, note in enumerate(notes, 1):
         ws.cell(row=note_row + i, column=1, value=note).font = Font(name="Microsoft YaHei", size=9, color="888888")
@@ -107,7 +108,8 @@ state = {
     "folder_path": "",
     "excel_uploaded": None,        # (filename, path)
     "mappings": [],                 # [(keyword, name), ...]
-    "matched": [],                  # [(keyword, name, [files]), ...]
+    "matched": [],                  # 明细: [{keyword, name, files}, ...]
+    "grouped": [],                  # 发送计划(按联系人聚合去重): [{name, keywords, files}, ...]
     "sending": False,
     "stop_requested": False,
     "logs": [],
@@ -345,6 +347,23 @@ HTML = r'''<!DOCTYPE html>
   .toast.error { background: var(--danger); }
   @keyframes toastIn { from { opacity: 0; transform: translateX(-50%) translateY(-10px); } to { opacity: 1; transform: translateX(-50%) translateY(0); } }
 
+  /* 预览视图切换 */
+  .view-switch { display: flex; align-items: center; gap: 6px; margin-bottom: 12px; flex-wrap: wrap; }
+  .vs-btn {
+    padding: 5px 12px; font-size: 12px; border-radius: 14px; cursor: pointer;
+    border: 1px solid var(--border); background: #fff; color: var(--text-light);
+    font-family: inherit; transition: all .15s;
+  }
+  .vs-btn:hover { border-color: var(--primary); color: var(--primary); }
+  .vs-btn.active { background: var(--primary); border-color: var(--primary); color: #fff; }
+  .vs-tip { margin-left: auto; font-size: 12px; color: var(--text-muted); }
+  .vs-tip b { color: #d97706; }
+  .kw-tags { display: flex; flex-wrap: wrap; gap: 4px; }
+  .kw-tag {
+    font-size: 11px; padding: 1px 7px; border-radius: 10px;
+    background: #f1f5f9; color: #475569; border: 1px solid var(--border);
+  }
+
   /* Responsive */
   @media (max-width: 640px) {
     .container { padding: 12px; }
@@ -401,15 +420,19 @@ HTML = r'''<!DOCTYPE html>
     <div id="sectionManual" style="display:none;">
       <div class="table-wrap">
         <table class="mapping-table" id="mappingTable">
-          <thead><tr><th style="width:45%">文件名关键词</th><th style="width:45%">微信昵称</th><th style="width:50px;"></th></tr></thead>
+          <thead><tr><th style="width:45%">文件名关键词</th><th style="width:45%">微信备注名 / 昵称</th><th style="width:50px;"></th></tr></thead>
           <tbody id="mappingBody">
             <tr>
               <td><input type="text" placeholder="例如: 月报" class="kw-input"></td>
-              <td><input type="text" placeholder="例如: 张三" class="name-input"></td>
+              <td><input type="text" placeholder="例如: 张三（建议填备注名）" class="name-input"></td>
               <td><button class="btn-icon" onclick="removeMappingRow(this)" title="删除">✕</button></td>
             </tr>
           </tbody>
         </table>
+      </div>
+      <div class="hint" style="margin-top:8px;">
+        第二列请填对方的<b>微信备注名</b>（最准，微信搜索权重高）或<b>昵称</b>；重名时填<b>微信号</b>最保险。
+        多个关键词映射同一个人时会自动合并，<b>只发送一次</b>，不会重复发。
       </div>
       <button class="btn btn-outline btn-sm add-row-btn" onclick="addMappingRow()">➕ 添加一行</button>
       <button class="btn btn-primary btn-sm add-row-btn" onclick="saveManualMappings()" style="margin-left:8px;">💾 保存映射</button>
@@ -425,8 +448,8 @@ HTML = r'''<!DOCTYPE html>
       <label for="enableMsg">发送文件时附带一条消息</label>
     </div>
     <div class="form-group" id="msgGroup" style="display:none;">
-      <textarea id="msgText" placeholder="输入消息内容，支持变量: {name}=微信昵称"></textarea>
-      <div class="hint">提示: 使用 <code>{name}</code> 会自动替换为对方的微信昵称</div>
+      <textarea id="msgText" placeholder="输入消息内容，支持变量: {name}=备注名/昵称"></textarea>
+      <div class="hint">提示: 使用 <code>{name}</code> 会自动替换为对方的备注名/昵称</div>
     </div>
   </div>
 
@@ -441,9 +464,14 @@ HTML = r'''<!DOCTYPE html>
   <!-- 匹配预览 -->
   <div class="card" id="previewCard" style="display:none;">
     <div class="card-title"><span class="icon">📊</span> 匹配预览</div>
+    <div class="view-switch">
+      <button class="vs-btn active" id="vsContact" onclick="switchPreviewView('contact')">按联系人（实际发送计划）</button>
+      <button class="vs-btn" id="vsKeyword" onclick="switchPreviewView('keyword')">按关键词（明细）</button>
+      <span class="vs-tip" id="mergeTip"></span>
+    </div>
     <div class="table-wrap">
       <table>
-        <thead><tr><th>关键词</th><th>微信昵称</th><th>匹配文件</th><th style="width:70px;">状态</th></tr></thead>
+        <thead id="previewHead"></thead>
         <tbody id="previewBody"></tbody>
       </table>
     </div>
@@ -506,7 +534,7 @@ async function saveManualMappings() {
     const name = row.querySelector('.name-input').value.trim();
     if (kw && name) mappings.push([kw, name]);
   }
-  if (mappings.length === 0) return toast('请至少填写一行关键词和昵称', 'error');
+  if (mappings.length === 0) return toast('请至少填写一行关键词和联系人（备注名/昵称）', 'error');
 
   const res = await fetch('/api/set_mappings', {
     method: 'POST', headers: {'Content-Type': 'application/json'},
@@ -607,6 +635,60 @@ function toggleMessage() {
 }
 
 // ─── 预览匹配 ──────────────────────────────────────────────
+let previewData = null;      // 缓存最近一次预览结果
+let previewView = 'contact'; // 'contact' = 按联系人(发送计划) | 'keyword' = 按关键词(明细)
+
+function escapeFileList(files) {
+  return files.length > 0
+    ? '<div class="file-list-inline">' + files.map(f => `<div>📄 ${escapeHtml(f)}</div>`).join('') + '</div>'
+    : '<span style="color:var(--text-muted);">—</span>';
+}
+
+function switchPreviewView(view) {
+  previewView = view;
+  document.getElementById('vsContact').classList.toggle('active', view === 'contact');
+  document.getElementById('vsKeyword').classList.toggle('active', view === 'keyword');
+  renderPreview();
+}
+
+function renderPreview() {
+  if (!previewData) return;
+  const data = previewData;
+  const tbody = document.getElementById('previewBody');
+  const empty = document.getElementById('previewEmpty');
+  const head = document.getElementById('previewHead');
+  const rows = previewView === 'contact' ? data.grouped : data.matched;
+
+  if (!rows || rows.length === 0) {
+    tbody.innerHTML = '';
+    empty.style.display = 'block';
+    head.innerHTML = '';
+    return;
+  }
+  empty.style.display = 'none';
+
+  if (previewView === 'contact') {
+    head.innerHTML = '<tr><th style="width:18%">联系人</th><th style="width:22%">命中关键词</th><th>匹配文件（已去重）</th><th style="width:70px;">状态</th></tr>';
+    tbody.innerHTML = rows.map(g => {
+      const kwHtml = g.keywords.length > 0
+        ? '<div class="kw-tags">' + g.keywords.map(k => `<span class="kw-tag">${escapeHtml(k)}</span>`).join('') + '</div>'
+        : '<span style="color:var(--text-muted);">—</span>';
+      const badge = g.files.length > 0
+        ? '<span class="badge badge-info">待发送</span>'
+        : '<span class="badge badge-warn">无匹配</span>';
+      return `<tr><td>${escapeHtml(g.name)}</td><td>${kwHtml}</td><td>${escapeFileList(g.files)}</td><td>${badge}</td></tr>`;
+    }).join('');
+  } else {
+    head.innerHTML = '<tr><th>关键词</th><th style="width:18%">联系人</th><th>匹配文件</th><th style="width:70px;">状态</th></tr>';
+    tbody.innerHTML = rows.map(m => {
+      const badge = m.files.length > 0
+        ? '<span class="badge badge-info">待发送</span>'
+        : '<span class="badge badge-warn">无匹配</span>';
+      return `<tr><td>${escapeHtml(m.keyword)}</td><td>${escapeHtml(m.name)}</td><td>${escapeFileList(m.files)}</td><td>${badge}</td></tr>`;
+    }).join('');
+  }
+}
+
 async function previewMatches() {
   const path = document.getElementById('folderPath').value.trim();
   if (!path) return toast('请先输入文件夹路径', 'error');
@@ -619,29 +701,21 @@ async function previewMatches() {
 
   if (data.error) return toast(data.error, 'error');
 
+  previewData = data;
   document.getElementById('previewCard').style.display = 'block';
-  const tbody = document.getElementById('previewBody');
-  const empty = document.getElementById('previewEmpty');
+  renderPreview();
 
-  if (data.matched.length === 0) {
-    tbody.innerHTML = '';
-    empty.style.display = 'block';
+  // 合并提示
+  const tip = document.getElementById('mergeTip');
+  if (data.dup_keywords > 0 || data.dup_files > 0) {
+    tip.innerHTML = `已自动合并：<b>${data.dup_keywords}</b> 条重复映射、<b>${data.dup_files}</b> 个重复文件（同一联系人只发一次）`;
   } else {
-    empty.style.display = 'none';
-    tbody.innerHTML = data.matched.map((m, i) => {
-      const filesHtml = m.files.length > 0
-        ? '<div class="file-list-inline">' + m.files.map(f => `<div>📄 ${escapeHtml(f)}</div>`).join('') + '</div>'
-        : '<span style="color:var(--text-muted);">—</span>';
-      const badge = m.files.length > 0
-        ? '<span class="badge badge-info">待发送</span>'
-        : '<span class="badge badge-warn">无匹配</span>';
-      return `<tr><td>${escapeHtml(m.keyword)}</td><td>${escapeHtml(m.name)}</td><td>${filesHtml}</td><td>${badge}</td></tr>`;
-    }).join('');
+    tip.textContent = '';
   }
 
   document.getElementById('btnSend').disabled = data.sendable === 0;
   document.getElementById('sendStatus').textContent =
-    `匹配: ${data.matched_total} 条 | 可发送: ${data.sendable} 个联系人 | 文件: ${data.total_files} 个`;
+    `映射 ${data.matched_total} 条 → 合并为 ${data.sendable} 个联系人 | 文件 ${data.total_files} 个`;
 }
 
 // ─── 发送 ──────────────────────────────────────────────────
@@ -868,10 +942,8 @@ def preview():
         if os.path.isfile(full):
             files_in_folder[name] = full
 
-    # 匹配
+    # 逐条匹配（明细，便于核对每个关键词命中了哪些文件）
     matched = []
-    sendable = 0
-    total_files = 0
     for keyword, name in state["mappings"]:
         kw_lower = keyword.lower()
         file_matches = [fn for fn, fp in files_in_folder.items() if kw_lower in fn.lower()]
@@ -880,16 +952,58 @@ def preview():
             "name": name,
             "files": file_matches,
         })
-        if file_matches:
-            sendable += 1
-            total_files += len(file_matches)
+
+    # 按联系人聚合（真正的发送计划）：
+    #   - 多个关键词映射到同一个人 → 合并为一次发送，文件去重，绝不重复发
+    #   - 映射表里完全重复的行 → 同样合并
+    grouped = []
+    grouped_index = {}          # name -> 聚合项
+    dup_files = 0
+    dup_keywords = 0
+    for keyword, name in state["mappings"]:
+        kw_lower = keyword.lower()
+        file_matches = [fn for fn, fp in files_in_folder.items() if kw_lower in fn.lower()]
+
+        g = grouped_index.get(name)
+        if g is None:
+            g = {"name": name, "keywords": [], "files": [], "_seen": set()}
+            grouped_index[name] = g
+            grouped.append(g)
+        else:
+            dup_keywords += 1
+
+        if keyword not in g["keywords"]:
+            g["keywords"].append(keyword)
+
+        for fn in file_matches:
+            if fn in g["_seen"]:
+                dup_files += 1
+                continue
+            g["_seen"].add(fn)
+            g["files"].append(fn)
+
+    for g in grouped:
+        g.pop("_seen", None)    # set 不能序列化
+
+    # 统计以「发送计划」为准（所见即所发）
+    sendable = sum(1 for g in grouped if g["files"])
+    total_files = sum(len(g["files"]) for g in grouped)
 
     state["folder_path"] = folder
     state["matched"] = matched
-    _add_log(f"ℹ 预览完成: {len(matched)} 条映射, {sendable} 个联系人可发送, 共 {total_files} 个文件")
+    state["grouped"] = grouped
+    log = f"ℹ 预览完成: {len(matched)} 条映射 → 合并为 {sendable} 个联系人, 共 {total_files} 个文件"
+    if dup_keywords or dup_files:
+        log += f"（已合并 {dup_keywords} 条重复映射、去掉 {dup_files} 个重复文件）"
+    _add_log(log)
+
     return jsonify({
         "matched": matched,
         "matched_total": len(matched),
+        "grouped": grouped,
+        "grouped_total": len(grouped),
+        "dup_keywords": dup_keywords,
+        "dup_files": dup_files,
         "sendable": sendable,
         "total_files": total_files,
     })
@@ -899,18 +1013,32 @@ def preview():
 def send():
     if state["sending"]:
         return jsonify({"error": "正在发送中，请等待完成或先停止"})
-    if not state["matched"]:
+    if not state["matched"] and not state["grouped"]:
         return jsonify({"error": "请先预览匹配结果"})
 
     data = request.get_json()
     enable_msg = data.get("enable_msg", False)
     msg = data.get("msg", "").strip()
 
-    # 过滤出有文件的条目
-    send_list = []
-    for m in state["matched"]:
-        if m["files"]:
-            send_list.append(m)
+    # 发送计划：优先用按联系人聚合去重后的结果（同一人只发一次）
+    grouped = state.get("grouped") or []
+    if not grouped and state["matched"]:
+        # 兜底：从明细现场聚合，保证不重复发送
+        idx_map = {}
+        for m in state["matched"]:
+            g = idx_map.get(m["name"])
+            if g is None:
+                g = {"name": m["name"], "keywords": [], "files": []}
+                idx_map[m["name"]] = g
+                grouped.append(g)
+            if m["keyword"] not in g["keywords"]:
+                g["keywords"].append(m["keyword"])
+            for fn in m["files"]:
+                if fn not in g["files"]:
+                    g["files"].append(fn)
+        state["grouped"] = grouped
+
+    send_list = [g for g in grouped if g["files"]]
 
     if not send_list:
         return jsonify({"error": "没有可发送的文件"})
@@ -1024,7 +1152,9 @@ def _send_worker(send_list, enable_msg, msg_template):
             state["result"] = "stopped"
             break
 
-        keyword, name, file_names = m["keyword"], m["name"], m["files"]
+        name = m["name"]
+        file_names = m["files"]
+        keywords = m.get("keywords", [])
         state["progress"]["current"] = idx + 1
 
         try:
@@ -1041,11 +1171,12 @@ def _send_worker(send_list, enable_msg, msg_template):
 
             # 发送
             display = ", ".join(file_names)
+            kw_tag = f"[{'、'.join(keywords)}] " if keywords else ""
 
             if message:
-                _add_log(f"  [{idx+1}/{total}] 正在发送: {name} ← {display} [+消息]")
+                _add_log(f"  [{idx+1}/{total}] 正在发送: {name} ← {kw_tag}{display} [+消息]")
             else:
-                _add_log(f"  [{idx+1}/{total}] 正在发送: {name} ← {display}")
+                _add_log(f"  [{idx+1}/{total}] 正在发送: {name} ← {kw_tag}{display}")
 
             ok = sender.send(name, message=message, file_paths=file_paths)
 
