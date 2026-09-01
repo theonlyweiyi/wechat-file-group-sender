@@ -24,7 +24,7 @@ def create_template():
     )
 
     # 表头
-    headers = ["文件名关键词", "微信昵称", "备注（可选）"]
+    headers = ["文件名关键词", "微信备注名/昵称", "备注（可选）"]
     for col, header in enumerate(headers, 1):
         cell = ws.cell(row=1, column=col, value=header)
         cell.font = header_font
@@ -50,11 +50,12 @@ def create_template():
     note_row = len(examples) + 3
     ws.cell(row=note_row, column=1, value="使用说明:").font = Font(name="Microsoft YaHei", size=10, bold=True)
     notes = [
-        "1. 第一列填文件名关键词，第二列填微信昵称（与微信显示一致）",
+        "1. 第一列填文件名关键词，第二列填对方的微信备注名（优先）或昵称",
         "2. 匹配规则: 文件名包含关键词即匹配（不区分大小写）",
         "3. 一个关键词匹配到多个文件时，全部发送给对应联系人",
-        "4. 第一行为表头，程序自动跳过",
-        "5. 请确保微信PC版已登录，昵称/备注名与微信一致",
+        "4. 多个关键词映射到同一个人时会自动合并去重，只发送一次",
+        "5. 第一行为表头，程序自动跳过",
+        "6. 请确保微信PC版已登录；重名时建议填微信号（唯一）",
     ]
     for i, note in enumerate(notes, 1):
         ws.cell(row=note_row + i, column=1, value=note).font = Font(name="Microsoft YaHei", size=9, color="888888")
