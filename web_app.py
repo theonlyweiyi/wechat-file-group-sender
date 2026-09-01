@@ -619,7 +619,16 @@ async function handleExcelUpload(event) {
 }
 
 // ─── 下载模板 ──────────────────────────────────────────────
-function downloadTemplate() {
+async function downloadTemplate() {
+  // 桌面模式：走 pywebview 原生「另存为」对话框（WebView2 不处理 <a download>）
+  if (window.pywebview && window.pywebview.api && window.pywebview.api.save_template) {
+    try {
+      const path = await window.pywebview.api.save_template();
+      if (path) { toast(`模板已保存: ${path}`, 'success'); }
+      return;
+    } catch (e) { /* 走兜底 */ }
+  }
+  // 浏览器模式兜底：用 <a download> 触发下载
   const a = document.createElement('a');
   a.href = '/api/download_template';
   a.download = '发送映射模板.xlsx';
