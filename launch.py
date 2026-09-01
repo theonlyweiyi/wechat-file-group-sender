@@ -15,7 +15,7 @@ import ctypes
 from ctypes import wintypes
 
 import webview
-from web_app import app
+from web_app import app, _resolve_template_source, _build_template_bytes, TEMPLATE_NAME
 
 WINDOW_TITLE = "微信文件群发工具"
 DEFAULT_PORT = 5890
@@ -60,6 +60,44 @@ class Api:
         except Exception:
             pass
         return None
+
+    def save_template(self):
+        """弹出原生「另存为」对话框，把映射表模板保存到用户指定位置。返回保存路径或 None。"""
+        try:
+            if not webview.windows:
+                return None
+            # 弹出保存对话框（默认文件名 = 发送映射模板.xlsx）
+            dest = webview.windows[0].create_file_dialog(
+                webview.SAVE_DIALOG,
+                save_filename=TEMPLATE_NAME,
+                file_types=('Excel 工作簿 (*.xlsx)', '所有文件 (*.*)'),
+            )
+            if not dest:
+                return None
+            # SAVE_DIALOG 返回单个字符串路径（部分版本返回 list，兼容处理）
+            if isinstance(dest, (list, tuple)):
+                dest = dest[0] if dest else None
+            if not dest:
+                return None
+            dest = os.path.normpath(str(dest))
+
+            # 读取模板字节：优先内嵌资源，兜底动态生成
+            src = _resolve_template_source()
+            if src:
+                with open(src, 'rb') as f:
+                    data = f.read()
+            else:
+                data = _build_template_bytes().read()
+
+            # 确保扩展名正确
+            if not dest.lower().endswith('.xlsx'):
+                dest += '.xlsx'
+
+            with open(dest, 'wb') as f:
+                f.write(data)
+            return dest
+        except Exception:
+            return None
 
 
 # ─── Win32 窗口操作（复用与微信切换相同的方式）─────────────────
