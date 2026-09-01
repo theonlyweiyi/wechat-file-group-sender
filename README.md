@@ -6,6 +6,15 @@
 [![Release](https://img.shields.io/github/v/release/theonlyweiyi/wechat-file-group-sender?label=Release)](https://github.com/theonlyweiyi/wechat-file-group-sender/releases)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](#)
 
+<div align="center">
+  <a href="https://github.com/theonlyweiyi/wechat-file-group-sender/releases/latest">
+    <img src="https://img.shields.io/badge/⬇%20下载最新版-微信文件群发工具.exe-2ea44f?style=for-the-badge&logo=windows&logoColor=white" alt="下载最新版 exe" />
+  </a>
+  <a href="https://github.com/theonlyweiyi/wechat-file-group-sender/releases">
+    <img src="https://img.shields.io/badge/查看全部版本-Releases-0969da?style=for-the-badge&logo=github&logoColor=white" alt="Releases" />
+  </a>
+</div>
+
 ---
 
 ## ✨ 功能特性
@@ -28,6 +37,10 @@
 ## 🚀 快速开始
 
 ### 方式一：直接下载 exe（推荐普通用户）
+
+<p align="center">
+  <img src="docs/screenshot.png" alt="微信文件群发工具界面预览" width="760" />
+</p>
 
 1. 打开 [Releases 页面](https://github.com/theonlyweiyi/wechat-file-group-sender/releases)，下载 `WeChatFileSender.exe`。
 2. 确认 **微信 PC 版已登录**（前台或最小化窗口均可，程序会自动处理）。
