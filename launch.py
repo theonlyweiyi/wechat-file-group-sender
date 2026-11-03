@@ -15,7 +15,8 @@ import ctypes
 from ctypes import wintypes
 
 import webview
-from web_app import app, _resolve_template_source, _build_template_bytes, TEMPLATE_NAME
+from web_app import (app, _resolve_template_source, _build_template_bytes,
+                     TEMPLATE_NAME, state, config_store)
 
 WINDOW_TITLE = "微信文件群发工具"
 DEFAULT_PORT = 5890
@@ -57,6 +58,14 @@ class Api:
             hwnd = _find_window_by_title(WINDOW_TITLE)
             if hwnd:
                 _force_foreground(hwnd)
+        except Exception:
+            pass
+        return None
+
+    def save_geometry(self, geometry):
+        """pywebview 关闭前回调：记住窗口位置尺寸，下次启动复原。"""
+        try:
+            state["window_geometry"] = str(geometry)
         except Exception:
             pass
         return None
@@ -173,15 +182,39 @@ def main():
             time.sleep(0.3)
 
     api = Api()
-    webview.create_window(
+
+    # 恢复上次的窗口位置尺寸（缺口4）
+    width, height = 1040, 780
+    geom = state.get("window_geometry")
+    if geom:
+        try:
+            nums = [int(x) for x in geom.replace('x', ',').replace(',', ' ').split()]
+            if len(nums) == 4 and all(n > 0 for n in nums):
+                x, y, width, height = nums
+        except (ValueError, TypeError):
+            pass
+
+    window = webview.create_window(
         WINDOW_TITLE,
         f"http://127.0.0.1:{port}/",
         js_api=api,
-        width=1040,
-        height=780,
+        width=width,
+        height=height,
         min_size=(920, 640),
     )
-    webview.start()
+
+    # 窗口关闭时保存配置，避免用户这次的设置丢失
+    try:
+        window.events.closed += lambda: config_store.flush()
+    except Exception:
+        # 老版本 pywebview 事件 API 不同，退回 atexit
+        import atexit
+        atexit.register(lambda: config_store.flush())
+
+    try:
+        webview.start()
+    finally:
+        config_store.flush()
 
 
 if __name__ == '__main__':

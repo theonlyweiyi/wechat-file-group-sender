@@ -40,6 +40,11 @@ import win32clipboard
 CF_HDROP = 15
 
 
+# ── 四态定义放在 send_outcome.py（无微信依赖，可独立测试）──
+# re-export，供 `from wechat_sender import SendResult` 的旧用法继续可用
+from send_outcome import SendOutcome, SendResult, Stage  # noqa: E402
+
+
 def _add_log(msg):
     """日志回调，默认打印到控制台"""
     print(f"[WeChatSender] {msg}")
@@ -271,6 +276,28 @@ class WeChatSender:
         self.hwnd = None
         self.title = None
         self._connected = False
+        # 身份校验钩子：callable(name) -> (bool, str)。缺口2阶段先落为None，
+        # 即不做校验；后续「联系人精确匹配」会注入实现，见 verify_current_chat。
+        self._verify_hook = None
+
+    def set_verify_hook(self, fn):
+        """注入身份校验函数。fn(name) -> (matched: bool, detail: str)"""
+        self._verify_hook = fn
+
+    def verify_current_chat(self, name):
+        """
+        打开会话后校验「当前打开的是不是这个人」。
+
+        当前微信4.1+ 为 Qt Quick 像素渲染，不暴露 UIA 控件树，暂无可用实现。
+        未注入钩子时返回 (None, '未启用校验') —— None 表示「无法判断」，
+        调用方应区别于「校验不通过」，不要把无法判断当成安全。
+        """
+        if self._verify_hook is None:
+            return None, '未启用校验'
+        try:
+            return self._verify_hook(name)
+        except Exception as e:
+            return False, f'校验异常: {e}'
 
     def connect(self):
         """连接微信窗口"""
@@ -311,68 +338,106 @@ class WeChatSender:
         time.sleep(1.5)
 
     def send_message(self, text):
-        """在当前聊天窗口发送文字消息"""
+        """在当前聊天窗口发送文字消息。返回 SendResult。"""
         if not text:
-            return
-        activate_window(self.hwnd)
-        time.sleep(0.3)
+            return SendResult.success(Stage.MESSAGE, '空附言，跳过')
+        try:
+            activate_window(self.hwnd)
+            time.sleep(0.3)
+        except Exception as e:
+            return SendResult.safe_retry(Stage.MESSAGE, f'窗口激活失败: {e}')
+
         _paste_text(text)
         time.sleep(0.3)
-        pyautogui.press('enter')
+        try:
+            pyautogui.press('enter')
+        except Exception as e:
+            # 附言粘贴成功但回车失败 —— 文字还在输入框里，未发出，可安全重试
+            return SendResult.safe_retry(Stage.MESSAGE, f'回车失败: {e}')
         time.sleep(0.5)
+        return SendResult.success(Stage.MESSAGE)
 
     def send_files(self, file_paths):
-        """在当前聊天窗口发送文件"""
+        """在当前聊天窗口发送文件。返回 SendResult。"""
         if isinstance(file_paths, str):
             file_paths = [file_paths]
 
-        activate_window(self.hwnd)
-        time.sleep(0.3)
+        # 前置校验：文件必须真实存在，否则重试再多次也没用
+        missing = [p for p in file_paths if not os.path.isfile(p)]
+        if missing:
+            return SendResult.permanent_fail(
+                Stage.FILES, f'文件不存在: {os.path.basename(missing[0])}')
 
-        # 复制文件到剪贴板
+        try:
+            activate_window(self.hwnd)
+            time.sleep(0.3)
+        except Exception as e:
+            return SendResult.safe_retry(Stage.FILES, f'窗口激活失败: {e}')
+
         ok = copy_files_to_clipboard(file_paths)
         if not ok:
-            log("❌ 无法将文件复制到剪贴板")
-            return False
+            # 剪贴板写入失败发生在粘贴之前，文件确定没发出去。
+            # 但多半有其它程序占着剪贴板，连续重试通常也是失败
+            return SendResult.permanent_fail(Stage.FILES, '无法写入剪贴板')
         time.sleep(0.5)
 
-        # Ctrl+V 粘贴
-        pyautogui.hotkey('ctrl', 'v')
-        time.sleep(2.0)  # 等待文件加载
+        try:
+            pyautogui.hotkey('ctrl', 'v')
+        except Exception as e:
+            # 尚未回车，文件确定没发出去，可安全重试
+            return SendResult.safe_retry(Stage.FILES, f'粘贴失败: {e}')
+        time.sleep(2.0)  # 等待文件加载/预览
 
-        # 回车发送
-        pyautogui.press('enter')
+        try:
+            pyautogui.press('enter')
+        except Exception as e:
+            # 已粘贴到输入框但回车失败 → 文件还在输入框，可安全重试
+            return SendResult.safe_retry(Stage.FILES, f'回车失败: {e}')
         time.sleep(1.0)
-        return True
+
+        # 回车已按下，消息很可能已发出
+        return SendResult.success(Stage.FILES)
 
     def send(self, name, message=None, file_paths=None):
         """
         给指定联系人发送消息和/或文件。
 
-        参数:
-            name: 微信联系人名称（备注名或昵称）
-            message: 可选，文字消息
-            file_paths: 可选，文件路径(str)或路径列表(list)
-
-        返回: True 成功 / False 失败
+        返回 SendResult（结构化四态），不再返回裸 bool。
+        调用方应检查 result.outcome，而非 if result:
         """
         if not self._connected:
-            ok = self.connect()
+            try:
+                ok = self.connect()
+            except Exception as e:
+                return SendResult.safe_retry(Stage.CONNECT, f'连接异常: {e}')
             if not ok:
-                return False
+                return SendResult.safe_retry(Stage.CONNECT, '未找到微信窗口')
 
         # 打开聊天
-        self._search_and_open_chat(name)
+        try:
+            self._search_and_open_chat(name)
+        except Exception as e:
+            return SendResult.safe_retry(Stage.SEARCH, f'搜索异常: {e}')
 
-        # 发送消息
+        # 身份校验（钩子未启用时返回 None，不阻断流程）
+        verified, vdetail = self.verify_current_chat(name)
+        if verified is False:
+            # 明确不匹配 —— 绝不发送
+            return SendResult.permanent_fail(Stage.VERIFY, vdetail)
+        if verified is None:
+            log(f'⚠ 身份未校验: {vdetail}')
+
+        # 发送附言
         if message:
-            self.send_message(message)
+            r = self.send_message(message)
+            if not r.ok:
+                return r
 
         # 发送文件
         if file_paths:
             return self.send_files(file_paths)
 
-        return True
+        return SendResult.success(Stage.DONE)
 
     def close(self):
         """清理（目前无需特殊清理）"""
@@ -389,6 +454,7 @@ if __name__ == '__main__':
     if sender.connect():
         print("连接成功！")
         # 测试发送文字
-        sender.send("文件传输助手", message="这是一条自动测试消息")
+        r = sender.send("文件传输助手", message="这是一条自动测试消息")
+        print(f"结果: {r.outcome.value} /阶段={r.stage.value} / {r.detail}")
     else:
         print("连接失败！")

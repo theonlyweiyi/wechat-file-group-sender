@@ -6,6 +6,7 @@ __pycache__/
 
 # ── 运行时数据 ──
 _uploads/
+_test_files/
 @AutomationLog.txt
 
 # ── 旧版启动脚本(已被 exe 取代) ──
